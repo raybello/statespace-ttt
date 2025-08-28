@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>3D Graph Visualization Engine</title>
+    <style>
+      body {
+        margin: 0;
+        padding: 0;
+        font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+        background: linear-gradient(135deg, #0a0a0a, #1a1a2e);
+        overflow: hidden;
+      }
+
+      #container {
+        position: relative;
+        width: 100vw;
+        height: 100vh;
+      }
+
+      #controls {
+        position: absolute;
+        top: 20px;
+        left: 20px;
+        z-index: 100;
+        background: rgba(0, 0, 0, 0.8);
+        padding: 20px;
+        border-radius: 15px;
+        backdrop-filter: blur(10px);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        color: white;
+        max-width: 300px;
+        flex: auto;
+      }
+
+      .control-group {
+        margin-bottom: 15px;
+      }
+
+      label {
+        display: block;
+        margin-bottom: 5px;
+        font-weight: 600;
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+        color: #63d37b;
+      }
+
+      input,
+      button,
+      select {
+        padding: 8px 12px;
+        border: none;
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.1);
+        color: white;
+        font-size: 14px;
+        transition: all 0.3s ease;
+        width: 100%;
+        box-sizing: border-box;
+      }
+
+      input:focus,
+      select:focus {
+        outline: none;
+        background: rgba(255, 255, 255, 0.2);
+        box-shadow: 0 0 0 2px #63d37b;
+      }
+
+      button {
+        background: linear-gradient(45deg, #00f5ff, #0066ff);
+        cursor: pointer;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+        margin-top: 5px;
+      }
+
+      button:hover {
+        background: linear-gradient(45deg, #00ccff, #0044ff);
+        transform: translateY(-2px);
+        box-shadow: 0 5px 15px rgba(0, 245, 255, 0.3);
+      }
+
+      button:disabled {
+        background: rgba(100, 100, 100, 0.3);
+        cursor: not-allowed;
+        transform: none;
+        box-shadow: none;
+      }
+
+      .connection-selects {
+        display: flex;
+        gap: 10px;
+        margin-bottom: 10px;
+      }
+
+      .connection-selects select {
+        flex: 1;
+      }
+
+      .stats {
+        background: rgba(0, 100, 255, 0.1);
+        padding: 10px;
+        border-radius: 8px;
+        font-size: 12px;
+        margin-top: 10px;
+      }
+
+      .color-input {
+        width: 50px !important;
+        height: 35px;
+        cursor: pointer;
+      }
+
+      .node-info {
+        background: rgba(255, 102, 0, 0.1);
+        padding: 10px;
+        border-radius: 8px;
+        font-size: 12px;
+        margin-bottom: 10px;
+      }
+
+      .node-info div {
+        margin-bottom: 5px;
+      }
+
+      .node-info strong {
+        color: #63d37b;
+      }
+
+      input[type="checkbox"] {
+        width: auto;
+        margin-right: 8px;
+      }
+
+      #info {
+        position: absolute;
+        bottom: 20px;
+        right: 20px;
+        background: rgba(0, 0, 0, 0.8);
+        padding: 15px;
+        border-radius: 10px;
+        color: white;
+        font-size: 12px;
+        backdrop-filter: blur(10px);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        transition: opacity 0.3s ease, visibility 0.3s ease;
+      }
+
+      #canvasView {
+        position: absolute;
+        top: 20px;
+        right: 20px;
+        width: 300px;
+        height: auto;
+        background: rgba(0, 0, 0, 0.8);
+        border-radius: 15px;
+        backdrop-filter: blur(10px);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        padding: 10px;
+        box-sizing: border-box;
+        transition: opacity 0.3s ease, visibility 0.3s ease;
+      }
+
+      #miniCanvas {
+        width: 280px;
+        height: 280px;
+        border-radius: 8px;
+        background: linear-gradient(135deg, #0a0a0a, #1a1a2e);
+      }
+
+      .canvas-header {
+        color: #65ff86;
+        font-weight: 600;
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+        margin-bottom: 10px;
+        text-align: center;
+      }
+
+      .hidden-ui {
+        opacity: 0;
+        visibility: hidden;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="container">
+      <div id="controls">
+        <h3 style="margin-top: 0; color: #65ff86">Graph Controls</h3>
+
+        <div class="control-group">
+          <label>Node Name</label>
+          <input type="text" id="nodeName" placeholder="Enter node name" />
+          <button onclick="addNode()">Add Node</button>
+        </div>
+
+        <div class="control-group">
+          <label>Add Connection</label>
+          <div class="connection-selects">
+            <select id="fromNode">
+              <option value="">From Node</option>
+            </select>
+            <select id="toNode">
+              <option value="">To Node</option>
+            </select>
+          </div>
+          <button id="addConnectionBtn" onclick="addConnection()" disabled>
+            Add Connection
+          </button>
+        </div>
+
+        <div class="control-group">
+          <label>Node Color</label>
+          <input
+            type="color"
+            id="nodeColor"
+            class="color-input"
+            value="#00f5ff"
+          />
+        </div>
+
+        <div class="control-group">
+          <label>Animation Speed</label>
+          <input
+            type="range"
+            id="forceStrength"
+            min="0.1"
+            max="2"
+            step="0.1"
+            value="1"
+          />
+        </div>
+
+        <div class="control-group">
+          <label>Node Size</label>
+          <input
+            type="range"
+            id="nodeSize"
+            min="5"
+            max="50"
+            step="5"
+            value="20"
+          />
+        </div>
+
+        <div class="control-group">
+          <label>
+            <input
+              type="checkbox"
+              id="showLabels"
+              checked
+              onchange="toggleNodeLabels()"
+            />
+            Show Node Names
+          </label>
+        </div>
+
+        <div class="control-group">
+          <button onclick="connectRandomNodes()">Add Random Connection</button>
+          <button onclick="clearGraph()">Clear Graph</button>
+          <button onclick="resetCamera()">Reset View</button>
+        </div>
+
+        <div id="nodeDetails" class="control-group" style="display: none">
+          <h4 style="margin: 10px 0 5px 0; color: #ff6600">
+            Selected Node Details
+          </h4>
+          <div class="node-info">
+            <div>
+              <strong>Name:</strong> <span id="selectedNodeName">-</span>
+            </div>
+            <div>
+              <strong>Color:</strong> <span id="selectedNodeColor">-</span>
+            </div>
+            <div>
+              <strong>Position:</strong>
+              <span id="selectedNodePosition">-</span>
+            </div>
+            <div>
+              <strong>Connections:</strong>
+              <span id="selectedNodeConnections">-</span>
+            </div>
+            <div>
+              <strong>Connected To:</strong>
+              <span id="connectedNodesList">-</span>
+            </div>
+          </div>
+          <button
+            onclick="deleteSelectedNode()"
+            style="
+              background: linear-gradient(45deg, #ff4444, #cc0000);
+              margin-top: 10px;
+            "
+          >
+            Delete Node
+          </button>
+        </div>
+
+        <div class="stats">
+          <div>Nodes: <span id="nodeCount">0</span></div>
+          <div>Connections: <span id="edgeCount">0</span></div>
+          <div>FPS: <span id="fps">60</span></div>
+        </div>
+      </div>
+
+      <div id="canvasView">
+        <div class="canvas-header">State Preview</div>
+        <canvas id="miniCanvas"></canvas>
+        <div class="game-status" id="gameStatus">Player X's Turn</div>
+        <div class="game-controls">
+          <button onclick="resetGame()">Reset State</button>
+        </div>
+      </div>
+
+      <div id="info">
+        <strong>Controls:</strong><br />
+        Mouse: Orbit camera<br />
+        Scroll: Zoom<br />
+        Click node: Select/deselect<br />
+        Drag: Pan view
+      </div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="index.js"></script>
+  </body>
+</html>
