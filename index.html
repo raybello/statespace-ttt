@@ -230,9 +230,9 @@
             type="range"
             id="forceStrength"
             min="0.1"
-            max="2"
+            max="50"
             step="0.1"
-            value="1"
+            value="25"
           />
         </div>
 
@@ -289,6 +289,14 @@
               <strong>Connected To:</strong>
               <span id="connectedNodesList">-</span>
             </div>
+            <div>
+              <strong>Next Player:</strong>
+              <span id="nextPlayerID">-</span>
+            </div>
+            <div>
+              <strong>Game Status:</strong>
+              <span id="gameStatusID">-</span>
+            </div>
           </div>
           <button
             onclick="deleteSelectedNode()"
@@ -322,7 +330,11 @@
         Mouse: Orbit camera<br />
         Scroll: Zoom<br />
         Click node: Select/deselect<br />
-        Drag: Pan view
+        Drag: Pan view<br />
+        Key I: Toggle Graph Controls<br />
+        Key O: Toggle State Preview<br />
+        Key P: Toggle Controls<br />
+        Key L: Toggle Labels<br />
       </div>
     </div>
 

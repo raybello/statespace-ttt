@@ -9,25 +9,30 @@ const gameStatus = document.getElementById("gameStatus");
 canvas.width = 280;
 canvas.height = 280;
 
-let EMPTY = "_";
+let EMPTY = "-";
 let PLAYERS = ("X", "O");
 
 // Game state
 let board = [
-  ["", "", ""],
-  ["", "", ""],
-  ["", "", ""],
+  [EMPTY, EMPTY, EMPTY],
+  [EMPTY, EMPTY, EMPTY],
+  [EMPTY, EMPTY, EMPTY],
 ];
 let currentPlayer = "X";
+
 let gameOver = false;
 let winner = null;
+
+let controlsHidden = false;
+let previewHidden = false;
+let infoHidden = false;
 
 // Check for winner
 function checkWinner() {
   // Check rows
   for (let row = 0; row < 3; row++) {
     if (
-      board[row][0] &&
+      board[row][0] !== EMPTY &&
       board[row][0] === board[row][1] &&
       board[row][1] === board[row][2]
     ) {
@@ -38,7 +43,7 @@ function checkWinner() {
   // Check columns
   for (let col = 0; col < 3; col++) {
     if (
-      board[0][col] &&
+      board[0][col] !== EMPTY &&
       board[0][col] === board[1][col] &&
       board[1][col] === board[2][col]
     ) {
@@ -48,14 +53,14 @@ function checkWinner() {
 
   // Check diagonals
   if (
-    board[0][0] &&
+    board[0][0] !== EMPTY &&
     board[0][0] === board[1][1] &&
     board[1][1] === board[2][2]
   ) {
     return board[0][0];
   }
   if (
-    board[0][2] &&
+    board[0][2] !== EMPTY &&
     board[0][2] === board[1][1] &&
     board[1][1] === board[2][0]
   ) {
@@ -69,7 +74,7 @@ function checkWinner() {
 function isBoardFull() {
   for (let row = 0; row < 3; row++) {
     for (let col = 0; col < 3; col++) {
-      if (board[row][col] === "") {
+      if (board[row][col] === EMPTY) {
         return false;
       }
     }
@@ -85,15 +90,117 @@ function newBoard() {
   ];
 }
 
-function boardToKey(board) {
+function boardToKey(state) {
   // Flatten row-major into a 9-char string
-  let s = '';
+  let s = "";
   for (let r = 0; r < 3; r++) {
     for (let c = 0; c < 3; c++) {
-      s += board[r][c];
+      s += state[r][c];
     }
   }
   return s;
+}
+
+function keyToBoard(key) {
+  const b = newBoard();
+
+  for (let i = 0; i < 9; i++) {
+    const r = Math.floor(i / 3);
+    const c = i % 3;
+    b[r][c] = key[i];
+  }
+  return b;
+}
+
+function lineWinner(a, b, c) {
+  return a !== EMPTY && a === b && b === c ? a : null;
+}
+
+function getWinner(state) {
+  // rows
+  for (let r = 0; r < 3; r++) {
+    const w = lineWinner(state[r][0], state[r][1], state[r][2]);
+    if (w) return w;
+  }
+  // cols
+  for (let c = 0; c < 3; c++) {
+    const w = lineWinner(state[0][c], state[1][c], state[2][c]);
+    if (w) return w;
+  }
+  // diagonals
+  let w = lineWinner(state[0][0], state[1][1], state[2][2]);
+  if (w) return w;
+  w = lineWinner(state[0][2], state[1][1], state[2][0]);
+  if (w) return w;
+  return null;
+}
+
+function isFull(state) {
+  for (let r = 0; r < 3; r++) {
+    for (let c = 0; c < 3; c++) {
+      if (state[r][c] === EMPTY) return false;
+    }
+  }
+  return true;
+}
+
+function statusOf(state) {
+  const w = getWinner(state);
+  if (w) return w;
+  if (isFull(state)) return "draw";
+  return "ongoing";
+}
+
+function countMarks(state) {
+  let x = 0,
+    o = 0;
+  for (let r = 0; r < 3; r++) {
+    for (let c = 0; c < 3; c++) {
+      const v = state[r][c];
+      if (v === "X") x++;
+      else if (v === "O") o++;
+    }
+  }
+  return [x, o];
+}
+
+function nextPlayer(state) {
+  const [x, o] = countMarks(state);
+  if (x < o || x > o + 1) return null;
+  return x === o ? "X" : "O";
+}
+
+function legalMoves(state) {
+  if (statusOf(state) !== "ongoing") return [];
+  const p = nextPlayer(state);
+  if (!p) return [];
+  const moves = [];
+  for (let r = 0; r < 3; r++) {
+    for (let c = 0; c < 3; c++) {
+      if (state[r][c] == EMPTY) moves.push([r, c]);
+    }
+  }
+  return moves;
+}
+
+function applyMove(state, row, col, move) {
+  const nb = state.map((row) => row.slice());
+  nb[row][col] = move;
+  return nb;
+}
+
+function isReachable(state) {
+  // Filters out logically impossible states
+  const [x, o] = countMarks(state);
+  if (!(x === o || x === o + 1)) return false;
+
+  const w = getWinner(state);
+  if (w) {
+    // enforce last-move consistency
+    if (w === "X" && x !== o + 1) return false;
+    if (w === "O" && x !== o) return false;
+  }
+  return true;
 }
 
 // Update game status
@@ -166,9 +273,9 @@ function drawSymbol(row, col, symbol) {
 // Reset game
 function resetGame() {
   board = [
-    ["", "", ""],
-    ["", "", ""],
-    ["", "", ""],
+    [EMPTY, EMPTY, EMPTY],
+    [EMPTY, EMPTY, EMPTY],
+    [EMPTY, EMPTY, EMPTY],
   ];
   currentPlayer = "X";
   gameOver = false;
@@ -189,7 +296,7 @@ function handleCanvasClick(event) {
   const row = Math.floor(y / (canvas.height / 3));
 
   // Check if cell is empty
-  if (board[row][col] === "") {
+  if (board[row][col] === EMPTY) {
     board[row][col] = currentPlayer;
     drawSymbol(row, col, currentPlayer);
 
@@ -276,7 +383,10 @@ class TTTGraph3D {
       0.1,
       2000
     );
-    this.renderer = new THREE.WebGLRenderer({ antialias: true });
+    this.renderer = new THREE.WebGLRenderer({
+      antialias: true,
+      powerPreference: "high-performance",
+    });
     this.controls = null;
 
     this.nodes = new Map();
@@ -289,10 +399,10 @@ class TTTGraph3D {
     this.selectedNode = null;
 
     // Label visibility
-    this.labelsVisible = true;
+    this.labelsVisible = false;
 
     // Physics simulation parameters
-    this.forceStrength = 1;
+    this.forceStrength = 25;
     this.repulsionForce = 100;
     this.attractionForce = 0.1;
     this.damping = 0.9;
@@ -302,15 +412,153 @@ class TTTGraph3D {
     this.frameCount = 0;
     this.lastTime = performance.now();
 
+    // Internal instancing data
+    this._nodeCapacity = 10_000;
+    this._edgeCapacity = 20_000; // segments
+    this._initInstancedNodes(this._nodeCapacity);
+    this._initBatchedEdges(this._edgeCapacity);
+
     this.init();
     this.animate();
+  }
+
+  _initInstancedNodes(capacity) {
+    this._nodeCount = 0;
+    this._nodeCapacity = capacity;
+    this._nodeMaterial = new THREE.MeshLambertMaterial({
+      vertexColors: true,
+      transparent: true,
+      opacity: 0.95,
+    });
+    this._nodeMesh = new THREE.InstancedMesh(
+      this.nodeGeometry,
+      this._nodeMaterial,
+      this._nodeCapacity
+    );
+    this._nodeMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+
+    // colors
+    const color = new THREE.Color();
+    for (let i = 0; i < this._nodeCapacity; i++) {
+      color.setHex(0x00f5ff);
+      this._nodeMesh.setColorAt(i, color);
+    }
+    this._nodeMesh.instanceColor.needsUpdate = true;
+    this.scene.add(this._nodeMesh);
+
+    // physics arrays
+    const n3 = this._nodeCapacity * 3;
+    this._positions = new Float32Array(n3);
+    this._velocities = new Float32Array(n3);
+    this._forces = new Float32Array(n3);
+
+    // per-instance scale base (synced with updateNodeSizes)
+    this._baseScale = 1.0;
+
+    // map index -> name (for details/selection)
+    this._indexToName = [];
+  }
+
+  _growInstancedNodes() {
+    const oldMesh = this._nodeMesh;
+    const oldCap = this._nodeCapacity;
+    const newCap = Math.ceil(oldCap * 1.8);
+    const newMesh = new THREE.InstancedMesh(
+      this.nodeGeometry,
+      this._nodeMaterial,
+      newCap
+    );
+    newMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+
+    // copy matrices & colors
+    const tmp = new THREE.Matrix4();
+    for (let i = 0; i < oldCap; i++) {
+      oldMesh.getMatrixAt(i, tmp);
+      newMesh.setMatrixAt(i, tmp);
+    }
+    if (oldMesh.instanceColor) {
+      for (let i = 0; i < oldCap; i++)
+        newMesh.setColorAt(
+          i,
+          oldMesh.instanceColor.getX
+            ? oldMesh.instanceColor.getX(i)
+            : new THREE.Color()
+        );
+    }
+    for (let i = oldCap; i < newCap; i++)
+      newMesh.setColorAt(i, new THREE.Color(0x00f5ff));
+
+    newMesh.instanceColor.needsUpdate = true;
+
+    this.scene.remove(oldMesh);
+    this.scene.add(newMesh);
+    this._nodeMesh = newMesh;
+
+    const grow3 = (arr) => {
+      const out = new Float32Array(newCap * 3);
+      out.set(arr);
+      return out;
+    };
+    this._positions = grow3(this._positions);
+    this._velocities = grow3(this._velocities);
+    this._forces = grow3(this._forces);
+
+    this._nodeCapacity = newCap;
+  }
+
+  _initBatchedEdges(capacity) {
+    this._edgeCapacity = capacity;
+    this._edgeGeometry = new THREE.BufferGeometry();
+    this._edgePositions = new Float32Array(this._edgeCapacity * 2 * 3);
+    this._edgeGeometry.setAttribute(
+      "position",
+      new THREE.BufferAttribute(this._edgePositions, 3).setUsage(
+        THREE.DynamicDrawUsage
+      )
+    );
+    this._edgeMaterial = new THREE.LineBasicMaterial({
+      color: 0xffffff,
+      transparent: true,
+      opacity: 0.45,
+    });
+    this._edgeLines = new THREE.LineSegments(
+      this._edgeGeometry,
+      this._edgeMaterial
+    );
+    this._edgeCount = 0;
+    this.scene.add(this._edgeLines);
+  }
+
+  _growBatchedEdges() {
+    const old = this._edgePositions;
+    const oldCap = this._edgeCapacity;
+    const newCap = Math.ceil(oldCap * 1.8);
+    this._edgePositions = new Float32Array(newCap * 2 * 3);
+    this._edgePositions.set(old);
+    this._edgeGeometry.setAttribute(
+      "position",
+      new THREE.BufferAttribute(this._edgePositions, 3).setUsage(
+        THREE.DynamicDrawUsage
+      )
+    );
+    this._edgeCapacity = newCap;
+  }
+
+  _writeEdgePosition(iEdge, ax, ay, az, bx, by, bz) {
+    const base = iEdge * 6; // 2 vertices * 3
+    this._edgePositions[base + 0] = ax;
+    this._edgePositions[base + 1] = ay;
+    this._edgePositions[base + 2] = az;
+    this._edgePositions[base + 3] = bx;
+    this._edgePositions[base + 4] = by;
+    this._edgePositions[base + 5] = bz;
   }
 
   init() {
     // Setup renderer
     this.renderer.setSize(window.innerWidth, window.innerHeight);
     this.renderer.setClearColor(0x000000, 1);
-    this.renderer.shadowMap.enabled = true;
+    this.renderer.shadowMap.enabled = false;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     document.getElementById("container").appendChild(this.renderer.domElement);
 
@@ -324,9 +572,9 @@ class TTTGraph3D {
 
     const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
     directionalLight.position.set(50, 50, 50);
-    directionalLight.castShadow = true;
-    directionalLight.shadow.mapSize.width = 2048;
-    directionalLight.shadow.mapSize.height = 2048;
+    directionalLight.castShadow = false;
+    // directionalLight.shadow.mapSize.width = 2048;
+    // directionalLight.shadow.mapSize.height = 2048;
     this.scene.add(directionalLight);
 
     // Add subtle background elements
@@ -437,19 +685,30 @@ class TTTGraph3D {
     });
 
     const particles = new THREE.Points(particleGeometry, particleMaterial);
-    this.scene.add(particles);
+    // this.scene.add(particles);
   }
 
-  addNode(name = `Node ${this.nodes.size}`, color = 0x00f5ff, state = {
-    "board": null,
-    "next_player": null,
-    "status": null
-  }) {
+  addNode(
+    name = `Node ${this.nodes.size}`,
+    color = 0x00f5ff,
+    state = {
+      board: null,
+      next_player: null,
+      status: null,
+    }
+  ) {
     // Check if node already exists
     if (this.nodes.has(name)) {
       alert(`Node "${name}" already exists!`);
       return null;
     }
+
+    // Check if exceeding capacity
+    if (this._nodeCount >= this._nodeCapacity) this._growInstancedNodes();
+
+    const index = this._nodeCount++;
+    const record = {index, originalColor: color, state, active: true, name}
+
 
     const material = new THREE.MeshPhongMaterial({
       color: color,
@@ -457,6 +716,8 @@ class TTTGraph3D {
       transparent: true,
       opacity: 0.9,
     });
+
+    // const index
 
     const mesh = new THREE.Mesh(this.nodeGeometry, material);
 
@@ -519,7 +780,7 @@ class TTTGraph3D {
     node.add(label);
   }
 
-  addEdge(node1Name, node2Name) {
+  addEdge(node1Name, node2Name, move = null, player = null) {
     const node1 = this.nodes.get(node1Name);
     const node2 = this.nodes.get(node2Name);
 
@@ -546,10 +807,10 @@ class TTTGraph3D {
     geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
 
     const material = new THREE.LineBasicMaterial({
-      color: 0x00aaff,
+      color: 0xffffff,
       transparent: true,
-      opacity: 0.6,
-      linewidth: 2,
+      opacity: 0.5,
+      linewidth: 3,
     });
 
     const line = new THREE.Line(geometry, material);
@@ -559,8 +820,8 @@ class TTTGraph3D {
       line: line,
       node1: node1,
       node2: node2,
-      move: ["board_pos", "pos_state"],
-      player: "",
+      move: move,
+      player: player,
     });
     this.adjacent.get(node1Name).push(node2Name);
 
@@ -570,27 +831,60 @@ class TTTGraph3D {
 
   buildStateSpace() {
     const start = newBoard();
-    const startKey = boardToKey(start)
+    const startKey = boardToKey(start);
 
-    console.log("Start:", start)
-    console.log("Start key:", startKey)
-    
-    this.addNode(startKey, 0x00f5ff, {
+    console.log("Start:", start);
+    console.log("Start key:", startKey);
+
+    this.addNode(startKey, 0x00ff00, {
       board: startKey,
-      next_player: 'X',
-      status: 'ongoing',
-    })
+      next_player: "X",
+      status: "ongoing",
+    });
 
-    const q = [startKey]
-    const seen = new Set([startKey])
+    const q = [startKey];
+    const seen = new Set([startKey]);
 
-    while (q.length) {
-      
+    // while (q.length) {
+    for (let i = 0; i < 10; i++) {
+      const key = q.shift();
+      const state = keyToBoard(key);
+
+      const st = statusOf(state);
+      const np = nextPlayer(state);
+
+      const meta = this.nodes.get(key).userData.state;
+      meta.status = st;
+      meta.next_player = np;
+
+      if (st !== "ongoing" || !np) continue;
+      for (const [r, c] of legalMoves(state)) {
+        const child = applyMove(state, r, c, np);
+        if (!isReachable(child)) continue;
+
+        const childKey = boardToKey(child);
+        if (!this.nodes.has(childKey)) {
+          this.addNode(
+            childKey,
+            nextPlayer(child) === "X" ? 0xff0000 : 0x0000ff,
+            {
+              board: childKey,
+              next_player: nextPlayer(child),
+              status: statusOf(child),
+            }
+          );
+          console.log([r, c]);
+          console.log(nextPlayer(child));
+        }
+
+        this.addEdge(key, childKey, [r, c], np);
+
+        if (!seen.has(childKey)) {
+          seen.add(childKey);
+          q.push(childKey);
+        }
+      }
     }
-    
-    
-    
-    
   }
 
   updateDropdowns() {
@@ -751,10 +1045,31 @@ class TTTGraph3D {
         this.hideNodeDetails();
       } else {
         this.selectedNode = clickedNode;
-        this.selectedNode.material.color.setHex(0xff6600);
+        this.selectedNode.material.color.setHex(0xffff00);
         this.selectedNode.scale.set(1.3, 1.3, 1.3);
         this.showNodeDetails();
       }
+    }
+
+    if (this.selectedNode) {
+      drawGrid();
+      board = keyToBoard(this.selectedNode.userData.name);
+      currentPlayer = nextPlayer(board);
+
+      for (let r = 0; r < 3; r++) {
+        for (let c = 0; c < 3; c++) {
+          drawSymbol(r, c, board[r][c]);
+        }
+      }
+      // // Check for winner
+      // winner = checkWinner();
+      // if (winner || isBoardFull()) {
+      //   gameOver = true;
+      // }
+      updateGameStatus();
+    } else {
+      drawGrid();
+      updateGameStatus();
     }
   }
 
@@ -802,6 +1117,8 @@ class TTTGraph3D {
 
     const node = this.selectedNode;
     const nodeName = node.userData.name;
+    const nodeNextPlayer = node.userData.state.next_player;
+    const nodeGameStatus = node.userData.state.status;
 
     // Get connected nodes
     const connections = this.edges.filter(
@@ -830,6 +1147,8 @@ class TTTGraph3D {
       connections.length;
     document.getElementById("connectedNodesList").textContent =
       connectedNodes.length > 0 ? connectedNodes.join(", ") : "None";
+    document.getElementById("nextPlayerID").textContent = nodeNextPlayer;
+    document.getElementById("gameStatusID").textContent = nodeGameStatus;
   }
 
   hideNodeDetails() {
@@ -952,7 +1271,6 @@ function resetCamera() {
 
 // Add some initial nodes
 setTimeout(() => {
-
   // // Add Nodes
   // ["Central Hub", "Data Node", "Processing Unit", "Storage"].forEach(
   //   (name, i) => {
@@ -964,11 +1282,11 @@ setTimeout(() => {
   // graph.addEdge("Central Hub", "Data Node");
   // graph.addEdge("Central Hub", "Processing Unit");
   // graph.addEdge("Data Node", "Storage");
-  
+
   // Build state space for empty TTT grid
-  graph.buildStateSpace()
-  
-  console.log("============ More Details =============")
+  graph.buildStateSpace();
+
+  console.log("============ More Details =============");
   console.log("Nodes:", graph.nodes);
   console.log("Adjacent: ", graph.adjacent);
   console.log("Edges:", graph.edges);
@@ -977,6 +1295,26 @@ setTimeout(() => {
 // Allow Enter key to add nodes
 document.getElementById("nodeName").addEventListener("keypress", (e) => {
   if (e.key === "Enter") addNode();
+});
+
+window.addEventListener("keypress", (e) => {
+  if (e.key === "i") {
+    controlsHidden = !controlsHidden;
+    document.getElementById("controls").style.display = controlsHidden
+      ? "none"
+      : "";
+  } else if (e.key === "o") {
+    previewHidden = !previewHidden;
+    document.getElementById("canvasView").style.display = previewHidden
+      ? "none"
+      : "";
+  } else if (e.key === "p") {
+    infoHidden = !infoHidden;
+    document.getElementById("info").style.display = infoHidden ? "none" : "";
+  } else if (e.key === "l") {
+    graph.labelsVisible = !graph.labelsVisible;
+    graph.toggleLabels();
+  }
 });
 
 // Start the game when page loads
