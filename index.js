@@ -393,10 +393,15 @@ class TTTGraph3D {
     this.adjacent = new Map();
     this.edges = [];
 
-    //
-
     this.nodeGeometry = new THREE.SphereGeometry(1, 16, 16);
+    this.instanceGeometry = new THREE.IcosahedronGeometry();
     this.selectedNode = null;
+    this.selectedNodeIndex = -1;
+    this.dummy = new THREE.Object3D();
+    this.dummy2 = new THREE.Object3D();
+    this.dummy_direction = new THREE.Vector3();
+    this._baseScale = 1.0;
+    this._baseDisabledScale = 0.0;
 
     // Label visibility
     this.labelsVisible = false;
@@ -408,55 +413,137 @@ class TTTGraph3D {
     this.damping = 0.9;
     this.centerForce = 0.05;
 
+    // Spatial grid optimization parameters
+    this.gridSize = 50; // Size of each grid cell
+    this.maxRepulsionDistance = 150; // Skip repulsion beyond this distance
+    this.spatialGrid = new Map(); // Grid for spatial partitioning
+
+    // Pre-allocated vectors for performance
+    this.tempVector1 = new THREE.Vector3();
+    this.tempVector2 = new THREE.Vector3();
+    this.tempVector3 = new THREE.Vector3();
+
     // Performance tracking
     this.frameCount = 0;
     this.lastTime = performance.now();
 
     // Internal instancing data
-    this._nodeCapacity = 10_000;
-    this._edgeCapacity = 20_000; // segments
+    this._nodeCapacity = 10000;
+    this._edgeCapacity = 20000;
+
+    this._edgeCount = 0;
+    this._edgeIndexToConnection = [];
+
+    this._positions = Array.from(
+      { length: this._nodeCapacity },
+      () => new THREE.Vector3()
+    );
+    this._velocities = Array.from(
+      { length: this._nodeCapacity },
+      () => new THREE.Vector3()
+    );
+    this._forces = Array.from(
+      { length: this._nodeCapacity },
+      () => new THREE.Vector3()
+    );
+    this._originalColors = new Array(this._nodeCapacity).fill(0x00f5ff);
+
     this._initInstancedNodes(this._nodeCapacity);
-    this._initBatchedEdges(this._edgeCapacity);
+    this._initInstancedEdges(this._edgeCapacity);
 
     this.init();
     this.animate();
   }
 
+  // Helper function to get grid key from position
+  _getGridKey(x, y, z) {
+    const gx = Math.floor(x / this.gridSize);
+    const gy = Math.floor(y / this.gridSize);
+    const gz = Math.floor(z / this.gridSize);
+    return `${gx},${gy},${gz}`;
+  }
+
+  // Helper function to get neighboring grid cells
+  _getNeighboringCells(gridKey) {
+    const [gx, gy, gz] = gridKey.split(",").map(Number);
+    const neighbors = [];
+
+    // Check 3x3x3 neighborhood (27 cells including center)
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dz = -1; dz <= 1; dz++) {
+          neighbors.push(`${gx + dx},${gy + dy},${gz + dz}`);
+        }
+      }
+    }
+    return neighbors;
+  }
+
   _initInstancedNodes(capacity) {
     this._nodeCount = 0;
     this._nodeCapacity = capacity;
-    this._nodeMaterial = new THREE.MeshLambertMaterial({
-      vertexColors: true,
-      transparent: true,
-      opacity: 0.95,
-    });
+    this._nodeMaterial = new THREE.MeshPhongMaterial({ color: 0xff00ff });
     this._nodeMesh = new THREE.InstancedMesh(
-      this.nodeGeometry,
+      this.instanceGeometry,
       this._nodeMaterial,
       this._nodeCapacity
     );
-    this._nodeMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
 
-    // colors
+    // Initialize all instances as disabled (scale 0)
+    for (let i = 0; i < capacity; i++) {
+      this.dummy.position.set(0, 0, 0);
+      this.dummy.rotation.set(0, 0, 0);
+      this.dummy.scale.set(
+        this._baseDisabledScale,
+        this._baseDisabledScale,
+        this._baseDisabledScale
+      );
+      this.dummy.updateMatrix();
+      this._nodeMesh.setMatrixAt(i, this.dummy.matrix);
+    }
+
+    // Initialize colors
     const color = new THREE.Color();
     for (let i = 0; i < this._nodeCapacity; i++) {
       color.setHex(0x00f5ff);
       this._nodeMesh.setColorAt(i, color);
     }
-    this._nodeMesh.instanceColor.needsUpdate = true;
-    this.scene.add(this._nodeMesh);
 
-    // physics arrays
-    const n3 = this._nodeCapacity * 3;
-    this._positions = new Float32Array(n3);
-    this._velocities = new Float32Array(n3);
-    this._forces = new Float32Array(n3);
-
-    // per-instance scale base (synced with updateNodeSizes)
-    this._baseScale = 1.0;
-
-    // map index -> name (for details/selection)
+    // Map index -> name (for details/selection)
     this._indexToName = [];
+
+    this.scene.add(this._nodeMesh);
+  }
+
+  _initInstancedEdges(capacity) {
+    this._edgeCapacity = capacity;
+    this._edgeCount = 0;
+
+    // Create a cylinder geometry for edges (will be stretched and positioned)
+    const edgeGeometry = new THREE.CylinderGeometry(0.1, 0.1, 1, 8);
+    const edgeMaterial = new THREE.MeshBasicMaterial({
+      color: 0xffffff,
+      transparent: true,
+      opacity: 0.5,
+    });
+
+    this._edgeMesh = new THREE.InstancedMesh(
+      edgeGeometry,
+      edgeMaterial,
+      this._edgeCapacity
+    );
+
+    // Initialize all edge instances as disabled (scale 0)
+    for (let i = 0; i < capacity; i++) {
+      this.dummy2.position.set(0, 0, 0);
+      this.dummy2.rotation.set(0, 0, 0);
+      this.dummy2.scale.set(0, 0, 0);
+      this.dummy2.updateMatrix();
+      this._edgeMesh.setMatrixAt(i, this.dummy2.matrix);
+    }
+
+    this._edgeMesh.instanceMatrix.needsUpdate = true;
+    this.scene.add(this._edgeMesh);
   }
 
   _growInstancedNodes() {
@@ -464,94 +551,142 @@ class TTTGraph3D {
     const oldCap = this._nodeCapacity;
     const newCap = Math.ceil(oldCap * 1.8);
     const newMesh = new THREE.InstancedMesh(
-      this.nodeGeometry,
+      this.instanceGeometry,
       this._nodeMaterial,
       newCap
     );
-    newMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
 
-    // copy matrices & colors
+    // Copy matrices & colors
     const tmp = new THREE.Matrix4();
+    const tmpColor = new THREE.Color();
     for (let i = 0; i < oldCap; i++) {
       oldMesh.getMatrixAt(i, tmp);
       newMesh.setMatrixAt(i, tmp);
-    }
-    if (oldMesh.instanceColor) {
-      for (let i = 0; i < oldCap; i++)
-        newMesh.setColorAt(
-          i,
-          oldMesh.instanceColor.getX
-            ? oldMesh.instanceColor.getX(i)
-            : new THREE.Color()
-        );
-    }
-    for (let i = oldCap; i < newCap; i++)
-      newMesh.setColorAt(i, new THREE.Color(0x00f5ff));
 
+      if (oldMesh.instanceColor) {
+        oldMesh.getColorAt(i, tmpColor);
+        newMesh.setColorAt(i, tmpColor);
+      }
+    }
+
+    // Initialize new instances
+    for (let i = oldCap; i < newCap; i++) {
+      this.dummy.position.set(0, 0, 0);
+      this.dummy.scale.set(
+        this._baseDisabledScale,
+        this._baseDisabledScale,
+        this._baseDisabledScale
+      );
+      this.dummy.updateMatrix();
+      newMesh.setMatrixAt(i, this.dummy.matrix);
+      newMesh.setColorAt(i, new THREE.Color(0x00f5ff));
+    }
+
+    newMesh.instanceMatrix.needsUpdate = true;
     newMesh.instanceColor.needsUpdate = true;
 
     this.scene.remove(oldMesh);
     this.scene.add(newMesh);
     this._nodeMesh = newMesh;
 
-    const grow3 = (arr) => {
-      const out = new Float32Array(newCap * 3);
-      out.set(arr);
-      return out;
+    // Grow arrays
+    const growArray = (arr, newSize) => {
+      const newArr = Array.from({ length: newSize }, () => new THREE.Vector3());
+      for (let i = 0; i < arr.length; i++) {
+        newArr[i].copy(arr[i]);
+      }
+      return newArr;
     };
-    this._positions = grow3(this._positions);
-    this._velocities = grow3(this._velocities);
-    this._forces = grow3(this._forces);
+
+    this._positions = growArray(this._positions, newCap);
+    this._velocities = growArray(this._velocities, newCap);
+    this._forces = growArray(this._forces, newCap);
+    this._originalColors = [
+      ...this._originalColors,
+      ...new Array(newCap - oldCap).fill(0x00f5ff),
+    ];
 
     this._nodeCapacity = newCap;
   }
 
-  _initBatchedEdges(capacity) {
-    this._edgeCapacity = capacity;
-    this._edgeGeometry = new THREE.BufferGeometry();
-    this._edgePositions = new Float32Array(this._edgeCapacity * 2 * 3);
-    this._edgeGeometry.setAttribute(
-      "position",
-      new THREE.BufferAttribute(this._edgePositions, 3).setUsage(
-        THREE.DynamicDrawUsage
-      )
-    );
-    this._edgeMaterial = new THREE.LineBasicMaterial({
-      color: 0xffffff,
-      transparent: true,
-      opacity: 0.45,
-    });
-    this._edgeLines = new THREE.LineSegments(
-      this._edgeGeometry,
-      this._edgeMaterial
-    );
-    this._edgeCount = 0;
-    this.scene.add(this._edgeLines);
-  }
-
-  _growBatchedEdges() {
-    const old = this._edgePositions;
+  _growInstancedEdges() {
+    const oldMesh = this._edgeMesh;
     const oldCap = this._edgeCapacity;
     const newCap = Math.ceil(oldCap * 1.8);
-    this._edgePositions = new Float32Array(newCap * 2 * 3);
-    this._edgePositions.set(old);
-    this._edgeGeometry.setAttribute(
-      "position",
-      new THREE.BufferAttribute(this._edgePositions, 3).setUsage(
-        THREE.DynamicDrawUsage
-      )
-    );
+
+    const edgeGeometry = new THREE.CylinderGeometry(0.1, 0.1, 1, 8);
+    const edgeMaterial = new THREE.MeshBasicMaterial({
+      color: 0xffffff,
+      transparent: true,
+      opacity: 0.5,
+    });
+
+    const newMesh = new THREE.InstancedMesh(edgeGeometry, edgeMaterial, newCap);
+
+    // Copy existing matrices
+    const tmp = new THREE.Matrix4();
+    for (let i = 0; i < oldCap; i++) {
+      oldMesh.getMatrixAt(i, tmp);
+      newMesh.setMatrixAt(i, tmp);
+    }
+
+    // Initialize new instances as disabled
+    for (let i = oldCap; i < newCap; i++) {
+      this.dummy2.position.set(0, 0, 0);
+      this.dummy2.scale.set(0, 0, 0);
+      this.dummy2.updateMatrix();
+      newMesh.setMatrixAt(i, this.dummy2.matrix);
+    }
+
+    newMesh.instanceMatrix.needsUpdate = true;
+
+    this.scene.remove(oldMesh);
+    this.scene.add(newMesh);
+    this._edgeMesh = newMesh;
+
+    // Grow edge index mapping
+    const newIndexMapping = new Array(newCap);
+    for (let i = 0; i < this._edgeIndexToConnection.length; i++) {
+      newIndexMapping[i] = this._edgeIndexToConnection[i];
+    }
+    this._edgeIndexToConnection = newIndexMapping;
+
     this._edgeCapacity = newCap;
   }
 
-  _writeEdgePosition(iEdge, ax, ay, az, bx, by, bz) {
-    const base = iEdge * 6; // 2 vertices * 3
-    this._edgePositions[base + 0] = ax;
-    this._edgePositions[base + 1] = ay;
-    this._edgePositions[base + 2] = az;
-    this._edgePositions[base + 3] = bx;
-    this._edgePositions[base + 4] = by;
-    this._edgePositions[base + 5] = bz;
+  _updateEdgeGeometry(edgeIndex, pos1, pos2) {
+    // Calculate position, rotation, and scale for the cylinder to represent the edge
+    const midpoint = new THREE.Vector3()
+      .addVectors(pos1, pos2)
+      .multiplyScalar(0.5);
+    const direction = new THREE.Vector3().subVectors(pos2, pos1);
+    const length = direction.length();
+
+    if (length < 0.001) return; // Avoid division by zero
+
+    direction.normalize();
+
+    // Position at midpoint
+    this.dummy2.position.copy(midpoint);
+
+    // Scale: x and z for thickness, y for length
+    this.dummy2.scale.set(1, length, 1);
+
+    // Rotation to align with edge direction
+    // Default cylinder is aligned with Y axis, we need to align with our direction
+    const up = new THREE.Vector3(0, 1, 0);
+    const quaternion = new THREE.Quaternion().setFromUnitVectors(up, direction);
+    this.dummy2.setRotationFromQuaternion(quaternion);
+
+    this.dummy2.updateMatrix();
+    this._edgeMesh.setMatrixAt(edgeIndex, this.dummy2.matrix);
+  }
+
+  _isActive(index) {
+    const name = this._indexToName[index];
+    if (name === undefined) return false;
+    const rec = this.nodes.get(name);
+    return !!(rec && rec.active);
   }
 
   init() {
@@ -567,14 +702,12 @@ class TTTGraph3D {
     this.setupControls();
 
     // Add lights
-    const ambientLight = new THREE.AmbientLight(0x404040, 0.4);
+    const ambientLight = new THREE.AmbientLight(0x404040, 0.6);
     this.scene.add(ambientLight);
 
-    const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+    const directionalLight = new THREE.DirectionalLight(0xffffff, 1);
     directionalLight.position.set(50, 50, 50);
     directionalLight.castShadow = false;
-    // directionalLight.shadow.mapSize.width = 2048;
-    // directionalLight.shadow.mapSize.height = 2048;
     this.scene.add(directionalLight);
 
     // Add subtle background elements
@@ -625,7 +758,7 @@ class TTTGraph3D {
         const deltaX = e.clientX - mouseX;
         const deltaY = e.clientY - mouseY;
 
-        this.targetRotationY += deltaX * 0.005;
+        this.targetRotationY -= deltaX * 0.005;
         this.targetRotationX += deltaY * 0.005;
         this.targetRotationX = Math.max(
           -Math.PI / 2,
@@ -704,80 +837,60 @@ class TTTGraph3D {
     }
 
     // Check if exceeding capacity
-    if (this._nodeCount >= this._nodeCapacity) this._growInstancedNodes();
+    if (this._nodeCount >= this._nodeCapacity) {
+      this._growInstancedNodes();
+    }
 
     const index = this._nodeCount++;
-    const record = {index, originalColor: color, state, active: true, name}
-
-
-    const material = new THREE.MeshPhongMaterial({
-      color: color,
-      shininess: 100,
-      transparent: true,
-      opacity: 0.9,
-    });
-
-    // const index
-
-    const mesh = new THREE.Mesh(this.nodeGeometry, material);
+    this._indexToName[index] = name;
+    this._originalColors[index] = color;
 
     // Random initial position
     const radius = Math.sqrt(this.nodes.size) * 30 + 20;
     const angle = Math.random() * Math.PI * 2;
     const height = (Math.random() - 0.5) * 40;
 
-    mesh.position.set(
-      Math.cos(angle) * radius,
-      height,
-      Math.sin(angle) * radius
+    const px = Math.cos(angle) * radius;
+    const py = height;
+    const pz = Math.sin(angle) * radius;
+
+    // Set initial position and velocity
+    this._positions[index].set(px, py, pz);
+    this._velocities[index].set(0, 0, 0);
+    this._forces[index].set(0, 0, 0);
+
+    // Update instanced mesh
+    this.dummy.position.set(px, py, pz);
+    this.dummy.scale.set(this._baseScale, this._baseScale, this._baseScale);
+    this.dummy.rotation.set(
+      Math.random() * 2 * Math.PI,
+      Math.random() * 2 * Math.PI,
+      Math.random() * 2 * Math.PI
     );
+    this.dummy.updateMatrix();
+    this._nodeMesh.setMatrixAt(index, this.dummy.matrix);
+    this._nodeMesh.setColorAt(index, new THREE.Color(color));
+    this._nodeMesh.count = this._nodeCount;
 
-    mesh.castShadow = true;
-    mesh.receiveShadow = true;
-    mesh.userData = { name, originalColor: color, state };
+    // Store node data
+    const nodeRecord = {
+      index,
+      originalColor: color,
+      state,
+      active: true,
+      name,
+      position: this._positions[index],
+      velocity: this._velocities[index],
+      force: this._forces[index],
+    };
 
-    // Physics properties
-    mesh.velocity = new THREE.Vector3();
-    mesh.force = new THREE.Vector3();
-
-    this.scene.add(mesh);
-    this.nodes.set(name, mesh);
+    this.nodes.set(name, nodeRecord);
     this.adjacent.set(name, []);
-
-    // Add label
-    this.addNodeLabel(mesh, name);
 
     this.updateStats();
     this.updateDropdowns();
-    return mesh;
-  }
 
-  addNodeLabel(node, text) {
-    const canvas = document.createElement("canvas");
-    const context = canvas.getContext("2d");
-    canvas.width = 256;
-    canvas.height = 64;
-
-    context.fillStyle = "rgba(0, 0, 0, 0.8)";
-    context.fillRect(0, 0, canvas.width, canvas.height);
-
-    context.fillStyle = "#ffffff";
-    context.font = "20px Arial";
-    context.textAlign = "center";
-    context.fillText(text, canvas.width / 2, canvas.height / 2 + 7);
-
-    const texture = new THREE.CanvasTexture(canvas);
-    const material = new THREE.MeshBasicMaterial({
-      map: texture,
-      transparent: true,
-      alphaTest: 0.1,
-    });
-
-    const geometry = new THREE.PlaneGeometry(20, 5);
-    const label = new THREE.Mesh(geometry, material);
-    label.position.y = 15;
-    label.visible = this.labelsVisible; // Set initial visibility
-    node.add(label);
+    return nodeRecord;
   }
 
   addEdge(node1Name, node2Name, move = null, player = null) {
@@ -789,10 +902,8 @@ class TTTGraph3D {
     // Check if connection already exists
     const connectionExists = this.edges.some(
       (edge) =>
-        (edge.node1.userData.name === node1Name &&
-          edge.node2.userData.name === node2Name) ||
-        (edge.node1.userData.name === node2Name &&
-          edge.node2.userData.name === node1Name)
+        (edge.node1.name === node1Name && edge.node2.name === node2Name) ||
+        (edge.node1.name === node2Name && edge.node2.name === node1Name)
     );
 
     if (connectionExists) {
@@ -814,78 +925,99 @@ class TTTGraph3D {
     });
 
     const line = new THREE.Line(geometry, material);
-    this.scene.add(line);
 
-    this.edges.push({
+    // Check if we need to grow edge capacity
+    if (this._edgeCount >= this._edgeCapacity) {
+      this._growInstancedEdges();
+    }
+    const edgeIndex = this._edgeCount++;
+
+    const edgeData = {
       line: line,
+      edgeIndex: edgeIndex,
       node1: node1,
       node2: node2,
       move: move,
       player: player,
-    });
+    };
+
+    this.edges.push(edgeData);
+    this._edgeIndexToConnection[edgeIndex] = edgeData;
     this.adjacent.get(node1Name).push(node2Name);
+
+    // Update the instanced edge geometry
+    this._updateEdgeGeometry(edgeIndex, node1.position, node2.position);
+    this._edgeMesh.count = this._edgeCount;
+    this._edgeMesh.instanceMatrix.needsUpdate = true;
+
+    // this.scene.add(line);
 
     this.updateStats();
     return true;
   }
 
-  buildStateSpace() {
-    const start = newBoard();
-    const startKey = boardToKey(start);
+    buildStateSpace(useBFS = false, maxNodes = 800) {
+        const start = newBoard();
+        const startKey = boardToKey(start);
 
-    console.log("Start:", start);
-    console.log("Start key:", startKey);
+        console.log("Start:", start);
+        console.log("Start key:", startKey);
+        console.log("Using", useBFS ? "BFS" : "DFS", "traversal");
 
-    this.addNode(startKey, 0x00ff00, {
-      board: startKey,
-      next_player: "X",
-      status: "ongoing",
-    });
+        this.addNode(startKey, 0xff00ff, {
+            board: startKey,
+            next_player: "X",
+            status: "ongoing",
+        });
 
-    const q = [startKey];
-    const seen = new Set([startKey]);
+        const stack = [startKey]; // Will be used as queue for BFS or stack for DFS
+        const seen = new Set([startKey]);
+        let processedNodes = 0;
 
-    // while (q.length) {
-    for (let i = 0; i < 10; i++) {
-      const key = q.shift();
-      const state = keyToBoard(key);
+        while (stack.length > 0 && processedNodes < maxNodes) {
+            // BFS: shift() removes from front (queue behavior)
+            // DFS: pop() removes from back (stack behavior)
+            const key = useBFS ? stack.shift() : stack.pop();
+            const state = keyToBoard(key);
+            processedNodes++;
 
-      const st = statusOf(state);
-      const np = nextPlayer(state);
+            const st = statusOf(state);
+            const np = nextPlayer(state);
 
-      const meta = this.nodes.get(key).userData.state;
-      meta.status = st;
-      meta.next_player = np;
+            const meta = this.nodes.get(key).state;
+            meta.status = st;
+            meta.next_player = np;
 
-      if (st !== "ongoing" || !np) continue;
-      for (const [r, c] of legalMoves(state)) {
-        const child = applyMove(state, r, c, np);
-        if (!isReachable(child)) continue;
+            if (st !== "ongoing" || !np) continue;
 
-        const childKey = boardToKey(child);
-        if (!this.nodes.has(childKey)) {
-          this.addNode(
-            childKey,
-            nextPlayer(child) === "X" ? 0xff0000 : 0x0000ff,
-            {
-              board: childKey,
-              next_player: nextPlayer(child),
-              status: statusOf(child),
+            for (const [r, c] of legalMoves(state)) {
+                const child = applyMove(state, r, c, np);
+                if (!isReachable(child)) continue;
+
+                const childKey = boardToKey(child);
+                if (!this.nodes.has(childKey)) {
+                    this.addNode(
+                        childKey,
+                        nextPlayer(child) === "X" ? 0xff0000 : 0x0000ff,
+                        {
+                            board: childKey,
+                            next_player: nextPlayer(child),
+                            status: statusOf(child),
+                        }
+                    );
+                }
+
+                this.addEdge(key, childKey, [r, c], np);
+
+                if (!seen.has(childKey)) {
+                    seen.add(childKey);
+                    stack.push(childKey);
+                }
             }
-          );
-          console.log([r, c]);
-          console.log(nextPlayer(child));
         }
 
-        this.addEdge(key, childKey, [r, c], np);
-
-        if (!seen.has(childKey)) {
-          seen.add(childKey);
-          q.push(childKey);
-        }
-      }
+        console.log(`Processed ${processedNodes} nodes using ${useBFS ? 'BFS' : 'DFS'}`);
     }
-  }
 
   updateDropdowns() {
     const fromSelect = document.getElementById("fromNode");
@@ -928,79 +1060,128 @@ class TTTGraph3D {
   }
 
   updatePhysics() {
-    const nodes = Array.from(this.nodes.values());
+    const activeNodes = Array.from(this.nodes.values()).filter(
+      (node) => node.active
+    );
 
     // Clear forces
-    nodes.forEach((node) => {
-      node.force.set(0, 0, 0);
-    });
+    for (let i = 0; i < this._nodeCount; i++) {
+      this._forces[i].set(0, 0, 0);
+    }
 
-    // Repulsion between all nodes
-    for (let i = 0; i < nodes.length; i++) {
-      for (let j = i + 1; j < nodes.length; j++) {
-        const node1 = nodes[i];
-        const node2 = nodes[j];
+    // Build spatial grid
+    this.spatialGrid.clear();
+    for (const node of activeNodes) {
+      const pos = this._positions[node.index];
+      const gridKey = this._getGridKey(pos.x, pos.y, pos.z);
 
-        const distance = node1.position.distanceTo(node2.position);
-        if (distance < 0.1) continue;
+      if (!this.spatialGrid.has(gridKey)) {
+        this.spatialGrid.set(gridKey, []);
+      }
+      this.spatialGrid.get(gridKey).push(node);
+    }
 
-        const repulsion = this.repulsionForce / (distance * distance);
-        const direction = new THREE.Vector3()
-          .subVectors(node1.position, node2.position)
-          .normalize()
-          .multiplyScalar(repulsion);
+    // Optimized repulsion using spatial partitioning
+    for (const node1 of activeNodes) {
+      const node1_idx = node1.index;
+      const node1_pos = this._positions[node1_idx];
+      const node1_force = this._forces[node1_idx];
 
-        node1.force.add(direction);
-        node2.force.sub(direction);
+      const gridKey = this._getGridKey(node1_pos.x, node1_pos.y, node1_pos.z);
+      const neighboringCells = this._getNeighboringCells(gridKey);
+
+      // Only check nodes in neighboring grid cells
+      for (const cellKey of neighboringCells) {
+        const cellNodes = this.spatialGrid.get(cellKey);
+        if (!cellNodes) continue;
+
+        for (const node2 of cellNodes) {
+          if (node1.index >= node2.index) continue; // Avoid duplicate calculations
+
+          const node2_idx = node2.index;
+          const node2_pos = this._positions[node2_idx];
+          const node2_force = this._forces[node2_idx];
+
+          // Use pre-allocated vector for distance calculation
+          this.tempVector1.subVectors(node1_pos, node2_pos);
+          const distSq = this.tempVector1.lengthSq();
+
+          // Skip if beyond max repulsion distance
+          if (distSq > this.maxRepulsionDistance * this.maxRepulsionDistance)
+            continue;
+
+          const dist = Math.sqrt(distSq);
+          if (dist < 0.1) continue;
+
+          // Calculate repulsion force
+          const repulse = this.repulsionForce / distSq;
+
+          // Normalize direction and apply force
+          this.tempVector1.divideScalar(dist); // Normalize
+          this.tempVector2.copy(this.tempVector1).multiplyScalar(repulse);
+
+          node1_force.add(this.tempVector2);
+          node2_force.sub(this.tempVector2);
+        }
       }
     }
 
-    // Attraction along edges
+    // Attraction along edges (unchanged but using pre-allocated vectors)
     this.edges.forEach((edge) => {
-      const distance = edge.node1.position.distanceTo(edge.node2.position);
+      const pos1 = this._positions[edge.node1.index];
+      const pos2 = this._positions[edge.node2.index];
+      const force1 = this._forces[edge.node1.index];
+      const force2 = this._forces[edge.node2.index];
+
+      const distance = pos1.distanceTo(pos2);
       const attraction = distance * this.attractionForce;
 
-      const direction = new THREE.Vector3()
-        .subVectors(edge.node2.position, edge.node1.position)
+      // Use pre-allocated vector for direction calculation
+      this.tempVector3
+        .subVectors(pos2, pos1)
         .normalize()
         .multiplyScalar(attraction);
 
-      edge.node1.force.add(direction);
-      edge.node2.force.sub(direction);
+      force1.add(this.tempVector3);
+      force2.sub(this.tempVector3);
+
+      // Update edge geometry
+      this._updateEdgeGeometry(edge.edgeIndex, pos1, pos2);
     });
 
-    // Center force to prevent drift
-    nodes.forEach((node) => {
-      const centerForce = new THREE.Vector3()
-        .copy(node.position)
-        .multiplyScalar(-this.centerForce);
-      node.force.add(centerForce);
-    });
+    // Center force and update positions
+    for (let i = 0; i < this._nodeCount; i++) {
+      if (!this._isActive(i)) continue;
 
-    // Update positions
-    nodes.forEach((node) => {
-      node.velocity.add(node.force.multiplyScalar(this.forceStrength * 0.01));
-      node.velocity.multiplyScalar(this.damping);
-      node.position.add(node.velocity.clone().multiplyScalar(0.1));
+      const pos = this._positions[i];
+      const vel = this._velocities[i];
+      const force = this._forces[i];
 
-      // Update label orientation safely
-      if (node.children[0]) {
-        const label = node.children[0];
-        label.lookAt(this.camera.position);
+      // Center force (using pre-allocated vector)
+      this.tempVector1.copy(pos).multiplyScalar(-this.centerForce);
+      force.add(this.tempVector1);
+
+      // Update velocity and position
+      vel.add(force.multiplyScalar(this.forceStrength * 0.01));
+      vel.multiplyScalar(this.damping);
+
+      // Use pre-allocated vector for position update
+      this.tempVector2.copy(vel).multiplyScalar(0.1);
+      pos.add(this.tempVector2);
+
+      // Update instanced mesh matrix
+      this.dummy.position.copy(pos);
+
+      // Handle selection highlighting
+      if (this.selectedNodeIndex === i) {
+        this.dummy.scale.set(1.3, 1.3, 1.3);
+      } else {
+        this.dummy.scale.set(this._baseScale, this._baseScale, this._baseScale);
       }
-    });
 
-    // Update edge positions
-    this.edges.forEach((edge) => {
-      const positions = edge.line.geometry.attributes.position.array;
-      positions[0] = edge.node1.position.x;
-      positions[1] = edge.node1.position.y;
-      positions[2] = edge.node1.position.z;
-      positions[3] = edge.node2.position.x;
-      positions[4] = edge.node2.position.y;
-      positions[5] = edge.node2.position.z;
-      edge.line.geometry.attributes.position.needsUpdate = true;
-    });
+      this.dummy.updateMatrix();
+      this._nodeMesh.setMatrixAt(i, this.dummy.matrix);
+    }
 
     // Update camera rotation
     this.updateCameraRotation();
@@ -1027,33 +1208,54 @@ class TTTGraph3D {
     const raycaster = new THREE.Raycaster();
     raycaster.setFromCamera(mouse, this.camera);
 
-    const nodes = Array.from(this.nodes.values());
-    const intersects = raycaster.intersectObjects(nodes);
+    // Raycast against instanced mesh
+    const intersects = raycaster.intersectObject(this._nodeMesh);
 
     if (intersects.length > 0) {
-      const clickedNode = intersects[0].object;
+      const instanceId = intersects[0].instanceId;
+      const nodeName = this._indexToName[instanceId];
 
-      if (this.selectedNode) {
-        this.selectedNode.material.color.setHex(
-          this.selectedNode.userData.originalColor
+      if (!nodeName || !this._isActive(instanceId)) return;
+
+      // Reset previous selection
+      if (this.selectedNodeIndex >= 0) {
+        this._nodeMesh.setColorAt(
+          this.selectedNodeIndex,
+          new THREE.Color(this._originalColors[this.selectedNodeIndex])
         );
-        this.selectedNode.scale.set(1, 1, 1);
       }
 
-      if (this.selectedNode === clickedNode) {
+      // Handle selection
+      if (this.selectedNodeIndex === instanceId) {
+        this.selectedNodeIndex = -1;
         this.selectedNode = null;
         this.hideNodeDetails();
       } else {
-        this.selectedNode = clickedNode;
-        this.selectedNode.material.color.setHex(0xffff00);
-        this.selectedNode.scale.set(1.3, 1.3, 1.3);
+        this.selectedNodeIndex = instanceId;
+        this.selectedNode = this.nodes.get(nodeName);
+        this._nodeMesh.setColorAt(instanceId, new THREE.Color(0xff00ff));
         this.showNodeDetails();
       }
+
+      this._nodeMesh.instanceColor.needsUpdate = true;
+    } else {
+      // Deselect if clicking empty space
+      if (this.selectedNodeIndex >= 0) {
+        this._nodeMesh.setColorAt(
+          this.selectedNodeIndex,
+          new THREE.Color(this._originalColors[this.selectedNodeIndex])
+        );
+        this._nodeMesh.instanceColor.needsUpdate = true;
+      }
+      this.selectedNodeIndex = -1;
+      this.selectedNode = null;
+      this.hideNodeDetails();
     }
 
+    // Update game display
     if (this.selectedNode) {
       drawGrid();
-      board = keyToBoard(this.selectedNode.userData.name);
+      board = keyToBoard(this.selectedNode.name);
       currentPlayer = nextPlayer(board);
 
       for (let r = 0; r < 3; r++) {
@@ -1061,11 +1263,6 @@ class TTTGraph3D {
           drawSymbol(r, c, board[r][c]);
         }
       }
-      // // Check for winner
-      // winner = checkWinner();
-      // if (winner || isBoardFull()) {
-      //   gameOver = true;
-      // }
       updateGameStatus();
     } else {
       drawGrid();
@@ -1075,11 +1272,22 @@ class TTTGraph3D {
 
   updateNodeSizes(size) {
     const scale = size / 20;
-    this.nodes.forEach((node) => {
-      if (node !== this.selectedNode) {
-        node.scale.set(scale, scale, scale);
+    this._baseScale = scale;
+
+    // Update all active nodes
+    for (let i = 0; i < this._nodeCount; i++) {
+      if (!this._isActive(i)) continue;
+
+      this.dummy.position.copy(this._positions[i]);
+      if (this.selectedNodeIndex === i) {
+        this.dummy.scale.set(scale * 1.3, scale * 1.3, scale * 1.3);
+      } else {
+        this.dummy.scale.set(scale, scale, scale);
       }
-    });
+      this.dummy.updateMatrix();
+      this._nodeMesh.setMatrixAt(i, this.dummy.matrix);
+    }
+    this._nodeMesh.instanceMatrix.needsUpdate = true;
   }
 
   updateStats() {
@@ -1088,61 +1296,72 @@ class TTTGraph3D {
   }
 
   clearGraph() {
-    this.nodes.forEach((node) => {
-      this.scene.remove(node);
-    });
+    // Clear edges
     this.edges.forEach((edge) => {
       this.scene.remove(edge.line);
     });
 
+    // Reset instanced mesh
+    for (let i = 0; i < this._nodeCount; i++) {
+      this.dummy.position.set(0, 0, 0);
+      this.dummy.scale.set(
+        this._baseDisabledScale,
+        this._baseDisabledScale,
+        this._baseDisabledScale
+      );
+      this.dummy.updateMatrix();
+      this._nodeMesh.setMatrixAt(i, this.dummy.matrix);
+    }
+    this._nodeMesh.instanceMatrix.needsUpdate = true;
+    this._nodeMesh.count = 0;
+
+    // Clear data structures
     this.nodes.clear();
     this.edges = [];
     this.selectedNode = null;
+    this.selectedNodeIndex = -1;
+    this._nodeCount = 0;
+    this._indexToName = [];
+
     this.updateStats();
     this.updateDropdowns();
     this.hideNodeDetails();
   }
 
   toggleLabels() {
-    this.nodes.forEach((node) => {
-      if (node.children[0]) {
-        // Check if label exists
-        node.children[0].visible = this.labelsVisible;
-      }
-    });
+    this.labelsVisible = !this.labelsVisible;
+    // Note: Labels are not implemented for instanced meshes in this version
+    // You would need a separate system for labels with instanced rendering
   }
 
   showNodeDetails() {
     if (!this.selectedNode) return;
 
-    const node = this.selectedNode;
-    const nodeName = node.userData.name;
-    const nodeNextPlayer = node.userData.state.next_player;
-    const nodeGameStatus = node.userData.state.status;
+    const nodeName = this.selectedNode.name;
+    const nodeNextPlayer = this.selectedNode.state.next_player;
+    const nodeGameStatus = this.selectedNode.state.status;
 
     // Get connected nodes
     const connections = this.edges.filter(
-      (edge) =>
-        edge.node1.userData.name === nodeName ||
-        edge.node2.userData.name === nodeName
+      (edge) => edge.node1.name === nodeName || edge.node2.name === nodeName
     );
 
     const connectedNodes = connections.map((edge) => {
-      return edge.node1.userData.name === nodeName
-        ? edge.node2.userData.name
-        : edge.node1.userData.name;
+      return edge.node1.name === nodeName ? edge.node2.name : edge.node1.name;
     });
+
+    const pos = this._positions[this.selectedNode.index];
 
     // Update UI
     document.getElementById("nodeDetails").style.display = "block";
     document.getElementById("selectedNodeName").textContent = nodeName;
     document.getElementById("selectedNodeColor").textContent =
-      "#" + node.userData.originalColor.toString(16).padStart(6, "0");
+      "#" + this.selectedNode.originalColor.toString(16).padStart(6, "0");
     document.getElementById(
       "selectedNodePosition"
-    ).textContent = `(${node.position.x.toFixed(1)}, ${node.position.y.toFixed(
+    ).textContent = `(${pos.x.toFixed(1)}, ${pos.y.toFixed(1)}, ${pos.z.toFixed(
       1
-    )}, ${node.position.z.toFixed(1)})`;
+    )})`;
     document.getElementById("selectedNodeConnections").textContent =
       connections.length;
     document.getElementById("connectedNodesList").textContent =
@@ -1156,25 +1375,38 @@ class TTTGraph3D {
   }
 
   deleteSelectedNode() {
-    if (!this.selectedNode) return;
+    if (this.selectedNodeIndex < 0 || !this.selectedNode) return;
 
-    const nodeName = this.selectedNode.userData.name;
+    const nodeName = this.selectedNode.name;
 
     // Remove all edges connected to this node
     this.edges = this.edges.filter((edge) => {
       const isConnected =
-        edge.node1.userData.name === nodeName ||
-        edge.node2.userData.name === nodeName;
+        edge.node1.name === nodeName || edge.node2.name === nodeName;
       if (isConnected) {
         this.scene.remove(edge.line);
       }
       return !isConnected;
     });
 
-    // Remove the node itself
-    this.scene.remove(this.selectedNode);
+    // Disable the node in instanced mesh
+    this.dummy.position.set(0, 0, 0);
+    this.dummy.scale.set(
+      this._baseDisabledScale,
+      this._baseDisabledScale,
+      this._baseDisabledScale
+    );
+    this.dummy.updateMatrix();
+    this._nodeMesh.setMatrixAt(this.selectedNodeIndex, this.dummy.matrix);
+    this._nodeMesh.instanceMatrix.needsUpdate = true;
+
+    // Remove from data structures
+    this.nodes.get(nodeName).active = false;
     this.nodes.delete(nodeName);
+    this._indexToName[this.selectedNodeIndex] = undefined;
+
     this.selectedNode = null;
+    this.selectedNodeIndex = -1;
 
     // Update UI
     this.updateStats();
@@ -1214,7 +1446,6 @@ class TTTGraph3D {
     requestAnimationFrame(() => this.animate());
 
     this.updatePhysics();
-    this.renderer.render(this.scene, this.camera);
 
     // Update FPS
     this.frameCount++;
@@ -1224,6 +1455,13 @@ class TTTGraph3D {
       this.frameCount = 0;
       this.lastTime = currentTime;
     }
+
+    // Update instanced mesh
+    this._nodeMesh.instanceMatrix.needsUpdate = true;
+    this._nodeMesh.instanceColor.needsUpdate = true;
+    this._edgeMesh.instanceMatrix.needsUpdate = true;
+
+    this.renderer.render(this.scene, this.camera);
   }
 }
 
@@ -1282,6 +1520,8 @@ setTimeout(() => {
   // graph.addEdge("Central Hub", "Data Node");
   // graph.addEdge("Central Hub", "Processing Unit");
   // graph.addEdge("Data Node", "Storage");
+
+  // console.log(graph._forces[0])
 
   // Build state space for empty TTT grid
   graph.buildStateSpace();
