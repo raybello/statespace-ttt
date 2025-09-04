@@ -956,68 +956,70 @@ class TTTGraph3D {
     return true;
   }
 
-    buildStateSpace(useBFS = false, maxNodes = 800) {
-        const start = newBoard();
-        const startKey = boardToKey(start);
+  buildStateSpace(useBFS = false, maxNodes = 800) {
+    const start = newBoard();
+    const startKey = boardToKey(start);
 
-        console.log("Start:", start);
-        console.log("Start key:", startKey);
-        console.log("Using", useBFS ? "BFS" : "DFS", "traversal");
+    console.log("Start:", start);
+    console.log("Start key:", startKey);
+    console.log("Using", useBFS ? "BFS" : "DFS", "traversal");
 
-        this.addNode(startKey, 0xff00ff, {
-            board: startKey,
-            next_player: "X",
-            status: "ongoing",
-        });
+    this.addNode(startKey, 0xff00ff, {
+      board: startKey,
+      next_player: "X",
+      status: "ongoing",
+    });
 
-        const stack = [startKey]; // Will be used as queue for BFS or stack for DFS
-        const seen = new Set([startKey]);
-        let processedNodes = 0;
+    const stack = [startKey]; // Will be used as queue for BFS or stack for DFS
+    const seen = new Set([startKey]);
+    let processedNodes = 0;
 
-        while (stack.length > 0 && processedNodes < maxNodes) {
-            // BFS: shift() removes from front (queue behavior)
-            // DFS: pop() removes from back (stack behavior)
-            const key = useBFS ? stack.shift() : stack.pop();
-            const state = keyToBoard(key);
-            processedNodes++;
+    while (stack.length > 0 && processedNodes < maxNodes) {
+      // BFS: shift() removes from front (queue behavior)
+      // DFS: pop() removes from back (stack behavior)
+      const key = useBFS ? stack.shift() : stack.pop();
+      const state = keyToBoard(key);
+      processedNodes++;
 
-            const st = statusOf(state);
-            const np = nextPlayer(state);
+      const st = statusOf(state);
+      const np = nextPlayer(state);
 
-            const meta = this.nodes.get(key).state;
-            meta.status = st;
-            meta.next_player = np;
+      const meta = this.nodes.get(key).state;
+      meta.status = st;
+      meta.next_player = np;
 
-            if (st !== "ongoing" || !np) continue;
+      if (st !== "ongoing" || !np) continue;
 
-            for (const [r, c] of legalMoves(state)) {
-                const child = applyMove(state, r, c, np);
-                if (!isReachable(child)) continue;
+      for (const [r, c] of legalMoves(state)) {
+        const child = applyMove(state, r, c, np);
+        if (!isReachable(child)) continue;
 
-                const childKey = boardToKey(child);
-                if (!this.nodes.has(childKey)) {
-                    this.addNode(
-                        childKey,
-                        nextPlayer(child) === "X" ? 0xff0000 : 0x0000ff,
-                        {
-                            board: childKey,
-                            next_player: nextPlayer(child),
-                            status: statusOf(child),
-                        }
-                    );
-                }
-
-                this.addEdge(key, childKey, [r, c], np);
-
-                if (!seen.has(childKey)) {
-                    seen.add(childKey);
-                    stack.push(childKey);
-                }
+        const childKey = boardToKey(child);
+        if (!this.nodes.has(childKey)) {
+          this.addNode(
+            childKey,
+            nextPlayer(child) === "X" ? 0xff0000 : 0x0000ff,
+            {
+              board: childKey,
+              next_player: nextPlayer(child),
+              status: statusOf(child),
             }
+          );
         }
 
-        console.log(`Processed ${processedNodes} nodes using ${useBFS ? 'BFS' : 'DFS'}`);
+        this.addEdge(key, childKey, [r, c], np);
+
+        if (!seen.has(childKey)) {
+          seen.add(childKey);
+          stack.push(childKey);
+        }
+      }
     }
+
+    console.log(
+      `Processed ${processedNodes} nodes using ${useBFS ? "BFS" : "DFS"}`
+    );
+  }
 
   updateDropdowns() {
     const fromSelect = document.getElementById("fromNode");
@@ -1524,6 +1526,7 @@ setTimeout(() => {
   // console.log(graph._forces[0])
 
   // Build state space for empty TTT grid
+  alert("Usage: Select any node to view TickTacToe state");
   graph.buildStateSpace();
 
   console.log("============ More Details =============");
